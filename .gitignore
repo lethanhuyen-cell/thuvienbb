@@ -1,0 +1,22 @@
+# Node / Vercel build output
+.vercel
+.vercel/
+dist/
+build/
+node_modules/
+
+# OS/Editor files
+Thumbs.db
+.DS_Store
+*.suo
+*.ntvsca*
+*.njsproj
+*.sln
+*.sw?
+
+# Temporary Word files
+~$*.docx
+
+# Exclude large PDFs that exceed GitHub's 100MB file limit
+Kay và LyLy_ Trái Tim Của Vương Quốc Ngầm.pdf
+*.pdf
