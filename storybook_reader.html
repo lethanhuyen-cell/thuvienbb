@@ -248,15 +248,26 @@
             }
         ];
 
+        // Safe JSON parser for LocalStorage (prevents startup crashes)
+        function safeParseJSON(item, defaultVal) {
+            if (!item) return defaultVal;
+            try {
+                return JSON.parse(item);
+            } catch (e) {
+                console.error("Error parsing JSON in LocalStorage", e);
+                return defaultVal;
+            }
+        }
+
         // State Store
         const Store = {
             stories: [...DEFAULT_STORIES],
             currentScreen: 'home', // home, age-hub, detail, reader, bedtime, library, admin
             selectedAgeGroup: null, // 5-8, 9-12, 12-15
             selectedStoryId: null,
-            favorites: JSON.parse(localStorage.getItem('bb_favorites') || '[]'),
-            readingProgress: JSON.parse(localStorage.getItem('bb_progress') || '{}'),
-            unlockedBadges: JSON.parse(localStorage.getItem('bb_badges') || '[]'),
+            favorites: safeParseJSON(localStorage.getItem('bb_favorites'), []),
+            readingProgress: safeParseJSON(localStorage.getItem('bb_progress'), {}),
+            unlockedBadges: safeParseJSON(localStorage.getItem('bb_badges'), []),
             searchQuery: '',
             isSearchOpen: false,
             
@@ -307,11 +318,44 @@
             if (custom) {
                 try {
                     const parsed = JSON.parse(custom);
-                    Store.stories = [...DEFAULT_STORIES, ...parsed];
+                    if (Array.isArray(parsed)) {
+                        Store.stories = [...DEFAULT_STORIES, ...parsed];
+                    }
                 } catch(e) {
                     console.error("Error loading custom stories", e);
                 }
             }
+        }
+
+        // Story Cover Image Loader (returns raw data:svg or standard img element with error fallback)
+        function getStoryCover(story, size = 'large') {
+            if (!story || !story.cover) {
+                return `<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%' viewBox='0 0 400 300'><rect width='100%' height='100%' fill='%23FFF9EE'/><text x='50%' y='55%' font-size='50' text-anchor='middle'>📖</text></svg>`;
+            }
+            if (story.cover.startsWith('data:')) {
+                let cov = story.cover;
+                if (size === 'small') {
+                    cov = cov.replace(/width=['"]400['"]/g, "width='120'")
+                             .replace(/height=['"]300['"]/g, "height='90'")
+                             .replace(/width=['"]800['"]/g, "width='120'")
+                             .replace(/height=['"]600['"]/g, "height='90'")
+                             .replace(/font-size=['"]70['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]22['"]/g, "font-size='8'")
+                             .replace(/font-size=['"]100['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]28['"]/g, "font-size='8'");
+                } else if (size === 'medium') {
+                    cov = cov.replace(/width=['"]400['"]/g, "width='200'")
+                             .replace(/height=['"]300['"]/g, "height='150'")
+                             .replace(/width=['"]800['"]/g, "width='200'")
+                             .replace(/height=['"]600['"]/g, "height='150'")
+                             .replace(/font-size=['"]70['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]22['"]/g, "font-size='12'")
+                             .replace(/font-size=['"]100['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]28['"]/g, "font-size='12'");
+                }
+                return `<img src="${cov}" class="w-full h-full object-cover">`;
+            }
+            return `<img src="${story.cover}" class="w-full h-full object-cover" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100%\' height=\'100%\' viewBox=\'0 0 400 300\'><rect width=\'100%\' height=\'100%\' fill=\'%23FFF9EE\'/><text x=\'50%\' y=\'55%\' font-size=\'50\' text-anchor=\'middle\'>📖</text></svg>';">`;
         }
 
         // Web Audio API Ambient Music Box Synth (Bedtime Mode)
@@ -323,8 +367,15 @@
             
             start() {
                 if (this.isPlaying) return;
+                
+                const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+                if (!AudioContextClass) {
+                    console.warn("AudioContext is not supported on this browser.");
+                    return;
+                }
+
                 try {
-                    this.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    this.audioCtx = new AudioContextClass();
                     this.isPlaying = true;
                     
                     const playChord = () => {
@@ -376,10 +427,6 @@
                     this.audioCtx.close();
                     this.audioCtx = null;
                 }
-            },
-
-            setVolume(vol) {
-                // Not strictly needed for simple demo, but useful if fade-out is running
             }
         };
 
@@ -460,7 +507,6 @@
             
             resume(text, onBoundary, onEnd) {
                 if (Store.reader.speechSupported) {
-                    // SpeechSynthesis resume is bug-prone on some browsers, so we speak from current word or restart
                     window.speechSynthesis.resume();
                 } else {
                     this.fallbackSpeak(text, onEnd);
@@ -497,8 +543,13 @@
             } else if (screen === 'reader') {
                 const story = Store.stories.find(s => s.id === params.storyId);
                 Store.reader.story = story;
+                
                 // Get saved reading progress
-                Store.reader.currentPage = Store.readingProgress[story.id] || 0;
+                let pageProgress = Store.readingProgress[story.id] || 0;
+                if (story.pages && (pageProgress >= story.pages.length || pageProgress < 0)) {
+                    pageProgress = 0;
+                }
+                Store.reader.currentPage = pageProgress;
                 Store.reader.isPlaying = false;
                 Store.reader.audioProgress = 0;
                 Store.reader.audioTime = 0;
@@ -696,7 +747,7 @@
             const historyStories = [];
             for (const [storyId, pageIdx] of Object.entries(Store.readingProgress)) {
                 const story = Store.stories.find(s => s.id === storyId);
-                if (story && pageIdx < story.pages.length - 1) {
+                if (story && story.pages && pageIdx < story.pages.length - 1) {
                     historyStories.push({ story, pageIdx });
                 }
             }
@@ -710,7 +761,7 @@
                         <h3 class="text-sm font-bold text-textSecondary uppercase tracking-wider mb-2">Đọc tiếp truyện đang xem</h3>
                         <div class="bg-cardLight rounded-2xl p-3 border border-textSecondary/10 shadow-sm flex items-center gap-3">
                             <div class="w-14 h-14 bg-gray-200 rounded-xl overflow-hidden flex-shrink-0 flex items-center justify-center">
-                                ${recent.story.cover.startsWith('data:') ? recent.story.cover.replace("400", "120").replace("300", "90").replace("70", "30").replace("22", "8") : `<img src="${recent.story.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(recent.story, 'small')}
                             </div>
                             <div class="flex-1 min-w-0">
                                 <h4 class="text-sm font-bold text-textPrimary truncate">${recent.story.title}</h4>
@@ -743,7 +794,7 @@
                             ${filteredStories.map(story => `
                                 <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col cursor-pointer active:scale-[0.99] transition-transform">
                                     <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                        ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                        ${getStoryCover(story, 'large')}
                                         <span class="absolute top-3 right-3 text-[11px] font-bold bg-textPrimary/70 backdrop-blur-sm text-white px-2 py-0.5 rounded-full">
                                             ⏱️ ${story.duration}
                                         </span>
@@ -785,7 +836,7 @@
                 <!-- Age Gates Section -->
                 <section id="age-gates" class="w-full px-4 mb-6">
                     <h3 class="text-sm font-bold text-textSecondary uppercase tracking-wider mb-3">Chọn cánh cửa của con</h3>
-                    <div class="flex gap-3 overflow-x-auto pb-2 scroll-smooth">
+                    <div class="flex gap-3 overflow-x-auto pb-2 scroll-smooth animate-fade-in">
                         <!-- 5-8 Card -->
                         <div onclick="navigateTo('age-hub', {ageGroup: '5-8'})" class="w-[140px] flex-shrink-0 bg-[#FFF9EE] border-2 border-softEarthPink/30 rounded-2xl p-3 text-center cursor-pointer active:scale-95 transition-transform">
                             <span class="text-4xl block mb-2">🧸</span>
@@ -847,18 +898,11 @@
         }
         function handleSearch(val) {
             Store.searchQuery = val;
-            // Debounce re-rendering of feed
-            const container = document.getElementById('app-container');
-            const main = container.querySelector('main');
-            if (main) {
-                // Render just the story grids area to avoid keyboard flicker
-                // We'll run a full render which is fast enough, but keep focus
-                render();
-                const input = document.getElementById('search-input');
-                if(input) {
-                    input.focus();
-                    input.setSelectionRange(val.length, val.length);
-                }
+            render();
+            const input = document.getElementById('search-input');
+            if(input) {
+                input.focus();
+                input.setSelectionRange(val.length, val.length);
             }
         }
 
@@ -870,7 +914,6 @@
             let headerStyle = '';
             let description = '';
             let themeChipColor = '';
-            let cardLayout = '';
 
             if (ageGroup === '5-8') {
                 headerStyle = 'bg-softEarthPink/10 border-softEarthPink/20 text-softEarthPink';
@@ -900,7 +943,7 @@
                     storyCardsHtml = groupStories.map(story => `
                         <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-3xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col cursor-pointer active:scale-[0.99] transition-transform mb-4">
                             <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(story, 'large')}
                             </div>
                             <div class="p-5">
                                 <h4 class="text-xl font-bold text-textPrimary leading-snug mb-2">${story.title}</h4>
@@ -919,7 +962,7 @@
                             ${groupStories.map(story => `
                                 <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col justify-between cursor-pointer active:scale-95 transition-transform">
                                     <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                        ${story.cover.startsWith('data:') ? story.cover.replace("400", "200").replace("300", "150").replace("70", "30").replace("22", "12") : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                        ${getStoryCover(story, 'medium')}
                                     </div>
                                     <div class="p-3 flex-1 flex flex-col justify-between">
                                         <div>
@@ -936,7 +979,7 @@
                     // Minimalist Grid List for 12-15
                     storyCardsHtml = groupStories.map(story => `
                         <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl border-l-4 border-decodePurple p-4 shadow-sm flex justify-between items-center gap-3 cursor-pointer active:scale-[0.98] transition-transform mb-3">
-                            <div class="min-w-0">
+                            <div class="min-w-0 flex-1">
                                 <h4 class="text-base font-bold text-textPrimary mb-1 truncate">${story.title}</h4>
                                 <p class="text-xs text-textSecondary line-clamp-1 font-medium">${story.summary}</p>
                                 <div class="flex gap-2 mt-2">
@@ -988,7 +1031,7 @@
                 <!-- Cover Area -->
                 <section class="w-full px-4 pt-4 mb-4">
                     <div class="w-full aspect-[4/3] bg-gray-200 rounded-2xl overflow-hidden shadow-sm border border-textSecondary/5 flex items-center justify-center">
-                        ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                        ${getStoryCover(story, 'large')}
                     </div>
                 </section>
 
@@ -1082,9 +1125,16 @@
         function renderReaderScreen() {
             const reader = Store.reader;
             const story = reader.story;
-            if (!story) return '<div class="p-4 text-center">Không tìm thấy dữ liệu truyện.</div>';
+            if (!story || !story.pages || story.pages.length === 0) {
+                return '<div class="p-4 text-center">Không tìm thấy dữ liệu trang truyện.</div>';
+            }
             
-            const currentPageData = story.pages[reader.currentPage];
+            // Bounds check current page
+            if (reader.currentPage >= story.pages.length || reader.currentPage < 0) {
+                reader.currentPage = 0;
+            }
+
+            const currentPageData = story.pages[reader.currentPage] || { image: '', text: '' };
             const pageNum = reader.currentPage + 1;
             const totalPages = story.pages.length;
             const pctComplete = Math.round((pageNum / totalPages) * 100);
@@ -1196,8 +1246,8 @@
                         <div class="w-full flex items-center justify-between gap-2 mb-1 px-1">
                             <span id="player-time-current" class="text-[10px] font-bold text-textSecondary min-w-[32px]">${formatAudioTime(reader.audioTime)}</span>
                             <div class="flex-1 h-2 bg-textPrimary/10 rounded-full relative cursor-pointer" onclick="seekAudio(event)">
-                                <div class="absolute top-0 left-0 h-full bg-honeyYellow rounded-full" style="width: ${reader.audioProgress}%; transition: width 0.1s linear;"></div>
-                                <div class="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-textPrimary border-2 border-white rounded-full shadow-md transform scale-100 active:scale-125 transition-transform" style="left: calc(${reader.audioProgress}% - 7px); transition: left 0.1s linear;"></div>
+                                <div id="reader-progress-bar" class="absolute top-0 left-0 h-full bg-honeyYellow rounded-full" style="width: ${reader.audioProgress}%; transition: width 0.1s linear;"></div>
+                                <div id="reader-progress-dot" class="absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-textPrimary border-2 border-white rounded-full shadow-md transform scale-100 active:scale-125 transition-transform" style="left: calc(${reader.audioProgress}% - 7px); transition: left 0.1s linear;"></div>
                             </div>
                             <span id="player-time-total" class="text-[10px] font-bold text-textSecondary min-w-[32px] text-right">${formatAudioTime(reader.audioDuration)}</span>
                         </div>
@@ -1266,6 +1316,7 @@
 
         // Format narrative text with highlight tags
         function formatHighlightedText(text) {
+            if (!text) return '';
             if (Store.reader.highlightCharIndex === -1) return text;
             
             // Highlight word boundaries
@@ -1287,8 +1338,16 @@
         function updateReaderTextDisplay() {
             const textElement = document.getElementById('reader-story-text');
             if (textElement && Store.reader.story) {
-                const currentPageData = Store.reader.story.pages[Store.reader.currentPage];
-                textElement.innerHTML = formatHighlightedText(currentPageData.text);
+                const pages = Store.reader.story.pages;
+                if (Store.reader.currentPage >= pages.length) {
+                    Store.reader.currentPage = 0;
+                }
+                const currentPageData = pages[Store.reader.currentPage];
+                if (currentPageData && currentPageData.text) {
+                    textElement.innerHTML = formatHighlightedText(currentPageData.text);
+                } else {
+                    textElement.innerHTML = '';
+                }
             }
         }
 
@@ -1539,7 +1598,14 @@
         function playNarrator() {
             if (Store.reader.timer) clearInterval(Store.reader.timer);
             
-            const currentPageData = Store.reader.story.pages[Store.reader.currentPage];
+            if (!Store.reader.story || !Store.reader.story.pages) return;
+            const pages = Store.reader.story.pages;
+            if (Store.reader.currentPage >= pages.length || Store.reader.currentPage < 0) {
+                Store.reader.currentPage = 0;
+            }
+            
+            const currentPageData = pages[Store.reader.currentPage];
+            if (!currentPageData) return;
             const textToSpeak = currentPageData.text;
             
             // Start speaking with SpeechSynthesis
@@ -1583,8 +1649,8 @@
         }
 
         function renderProgressDisplayOnly() {
-            const bar = document.querySelector('.glass-player div[style*="width"]');
-            const dot = document.querySelector('.glass-player div[style*="left"]');
+            const bar = document.getElementById('reader-progress-bar');
+            const dot = document.getElementById('reader-progress-dot');
             const timeVal = document.getElementById('player-time-current');
             
             if (bar && dot && timeVal) {
@@ -1669,7 +1735,7 @@
                             
                             <!-- Story Album Art -->
                             <div class="w-24 h-24 rounded-full overflow-hidden border-2 border-[#17213A] z-10 bg-gray-600 flex items-center justify-center relative shadow-inner">
-                                ${currentStory.cover.startsWith('data:') ? currentStory.cover.replace("400", "200").replace("300", "150").replace("70", "30") : `<img src="${currentStory.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(currentStory, 'medium')}
                             </div>
                         </div>
 
@@ -1794,7 +1860,7 @@
 
         function startBedtimeSpeech() {
             const currentStory = Store.bedtime.playlist[Store.bedtime.currentStoryIndex];
-            if (!currentStory) return;
+            if (!currentStory || !currentStory.pages) return;
 
             // Soft whispering storyteller speech trigger
             let allText = currentStory.pages.map(p => p.text).join("... ");
@@ -1822,15 +1888,8 @@
             Store.bedtime.timerInterval = setInterval(() => {
                 if (Store.bedtime.timerSeconds > 0) {
                     Store.bedtime.timerSeconds--;
-                    document.getElementById('sleep-timer-display').textContent = `Dừng sau ${formatAudioTime(Store.bedtime.timerSeconds)}`;
-                    
-                    // Fade-out audio in last 5 seconds
-                    if (Store.bedtime.timerSeconds <= 5) {
-                        // Linear decrease volume simulation
-                        if (window.speechSynthesis) {
-                            // Synthesis volume controls are restricted on some devices, so we just let it run or shut down
-                        }
-                    }
+                    const display = document.getElementById('sleep-timer-display');
+                    if (display) display.textContent = `Dừng sau ${formatAudioTime(Store.bedtime.timerSeconds)}`;
                 } else {
                     // Time is up! Shutdown everything
                     stopBedtimeTimer();
@@ -1888,7 +1947,7 @@
                         ${favStories.map(story => `
                             <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col justify-between cursor-pointer active:scale-95 transition-transform">
                                 <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                    ${story.cover.startsWith('data:') ? story.cover.replace("400", "200").replace("300", "150").replace("70", "30").replace("22", "10") : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                    ${getStoryCover(story, 'medium')}
                                 </div>
                                 <div class="p-3">
                                     <h4 class="text-xs font-bold text-textPrimary line-clamp-1 mb-1">${story.title}</h4>
@@ -2105,6 +2164,7 @@
                     customList = JSON.parse(custom);
                 } catch(e) {}
             }
+            if (!Array.isArray(customList)) customList = [];
             customList.push(newStory);
             localStorage.setItem('bb_custom_stories', JSON.stringify(customList));
 
@@ -2131,8 +2191,10 @@
                 if (custom) {
                     try {
                         let customList = JSON.parse(custom);
-                        customList = customList.filter(s => s.id !== id);
-                        localStorage.setItem('bb_custom_stories', JSON.stringify(customList));
+                        if (Array.isArray(customList)) {
+                            customList = customList.filter(s => s.id !== id);
+                            localStorage.setItem('bb_custom_stories', JSON.stringify(customList));
+                        }
                         
                         // Clear reading history for deleted story
                         if(Store.readingProgress[id] !== undefined) {

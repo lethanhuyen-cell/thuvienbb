@@ -314,6 +314,37 @@
             }
         }
 
+        // Story Cover Image Loader (returns raw data:svg or standard img element with error fallback)
+        function getStoryCover(story, size = 'large') {
+            if (!story || !story.cover) {
+                return `<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%' viewBox='0 0 400 300'><rect width='100%' height='100%' fill='%23FFF9EE'/><text x='50%' y='55%' font-size='50' text-anchor='middle'>📖</text></svg>`;
+            }
+            if (story.cover.startsWith('data:')) {
+                let cov = story.cover;
+                if (size === 'small') {
+                    cov = cov.replace(/width=['"]400['"]/g, "width='120'")
+                             .replace(/height=['"]300['"]/g, "height='90'")
+                             .replace(/width=['"]800['"]/g, "width='120'")
+                             .replace(/height=['"]600['"]/g, "height='90'")
+                             .replace(/font-size=['"]70['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]22['"]/g, "font-size='8'")
+                             .replace(/font-size=['"]100['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]28['"]/g, "font-size='8'");
+                } else if (size === 'medium') {
+                    cov = cov.replace(/width=['"]400['"]/g, "width='200'")
+                             .replace(/height=['"]300['"]/g, "height='150'")
+                             .replace(/width=['"]800['"]/g, "width='200'")
+                             .replace(/height=['"]600['"]/g, "height='150'")
+                             .replace(/font-size=['"]70['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]22['"]/g, "font-size='12'")
+                             .replace(/font-size=['"]100['"]/g, "font-size='30'")
+                             .replace(/font-size=['"]28['"]/g, "font-size='12'");
+                }
+                return `<img src="${cov}" class="w-full h-full object-cover">`;
+            }
+            return `<img src="${story.cover}" class="w-full h-full object-cover" onerror="this.onerror=null; this.src='data:image/svg+xml;utf8,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'100%\' height=\'100%\' viewBox=\'0 0 400 300\'><rect width=\'100%\' height=\'100%\' fill=\'%23FFF9EE\'/><text x=\'50%\' y=\'55%\' font-size=\'50\' text-anchor=\'middle\'>📖</text></svg>';">`;
+        }
+
         // Web Audio API Ambient Music Box Synth (Bedtime Mode)
         const BedtimeSynth = {
             notes: [261.63, 293.66, 329.63, 392.00, 440.00, 523.25, 587.33, 659.25], // Pentatonic scale C4-E5
@@ -710,7 +741,7 @@
                         <h3 class="text-sm font-bold text-textSecondary uppercase tracking-wider mb-2">Đọc tiếp truyện đang xem</h3>
                         <div class="bg-cardLight rounded-2xl p-3 border border-textSecondary/10 shadow-sm flex items-center gap-3">
                             <div class="w-14 h-14 bg-gray-200 rounded-xl overflow-hidden flex-shrink-0 flex items-center justify-center">
-                                ${recent.story.cover.startsWith('data:') ? recent.story.cover.replace("400", "120").replace("300", "90").replace("70", "30").replace("22", "8") : `<img src="${recent.story.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(recent.story, 'small')}
                             </div>
                             <div class="flex-1 min-w-0">
                                 <h4 class="text-sm font-bold text-textPrimary truncate">${recent.story.title}</h4>
@@ -743,7 +774,7 @@
                             ${filteredStories.map(story => `
                                 <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col cursor-pointer active:scale-[0.99] transition-transform">
                                     <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                        ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                        ${getStoryCover(story, 'large')}
                                         <span class="absolute top-3 right-3 text-[11px] font-bold bg-textPrimary/70 backdrop-blur-sm text-white px-2 py-0.5 rounded-full">
                                             ⏱️ ${story.duration}
                                         </span>
@@ -900,7 +931,7 @@
                     storyCardsHtml = groupStories.map(story => `
                         <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-3xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col cursor-pointer active:scale-[0.99] transition-transform mb-4">
                             <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(story, 'large')}
                             </div>
                             <div class="p-5">
                                 <h4 class="text-xl font-bold text-textPrimary leading-snug mb-2">${story.title}</h4>
@@ -919,7 +950,7 @@
                             ${groupStories.map(story => `
                                 <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col justify-between cursor-pointer active:scale-95 transition-transform">
                                     <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                        ${story.cover.startsWith('data:') ? story.cover.replace("400", "200").replace("300", "150").replace("70", "30").replace("22", "12") : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                        ${getStoryCover(story, 'medium')}
                                     </div>
                                     <div class="p-3 flex-1 flex flex-col justify-between">
                                         <div>
@@ -988,7 +1019,7 @@
                 <!-- Cover Area -->
                 <section class="w-full px-4 pt-4 mb-4">
                     <div class="w-full aspect-[4/3] bg-gray-200 rounded-2xl overflow-hidden shadow-sm border border-textSecondary/5 flex items-center justify-center">
-                        ${story.cover.startsWith('data:') ? story.cover : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                        ${getStoryCover(story, 'large')}
                     </div>
                 </section>
 
@@ -1669,7 +1700,7 @@
                             
                             <!-- Story Album Art -->
                             <div class="w-24 h-24 rounded-full overflow-hidden border-2 border-[#17213A] z-10 bg-gray-600 flex items-center justify-center relative shadow-inner">
-                                ${currentStory.cover.startsWith('data:') ? currentStory.cover.replace("400", "200").replace("300", "150").replace("70", "30") : `<img src="${currentStory.cover}" class="w-full h-full object-cover">`}
+                                ${getStoryCover(currentStory, 'medium')}
                             </div>
                         </div>
 
@@ -1888,7 +1919,7 @@
                         ${favStories.map(story => `
                             <div onclick="navigateTo('detail', {storyId: '${story.id}'})" class="bg-cardLight rounded-2xl overflow-hidden border border-textSecondary/10 shadow-sm flex flex-col justify-between cursor-pointer active:scale-95 transition-transform">
                                 <div class="w-full aspect-[4/3] bg-gray-200 relative overflow-hidden flex items-center justify-center">
-                                    ${story.cover.startsWith('data:') ? story.cover.replace("400", "200").replace("300", "150").replace("70", "30").replace("22", "10") : `<img src="${story.cover}" class="w-full h-full object-cover">`}
+                                    ${getStoryCover(story, 'medium')}
                                 </div>
                                 <div class="p-3">
                                     <h4 class="text-xs font-bold text-textPrimary line-clamp-1 mb-1">${story.title}</h4>
