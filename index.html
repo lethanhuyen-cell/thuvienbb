@@ -2305,7 +2305,7 @@
                         <h4 class="text-xs font-bold text-textPrimary uppercase tracking-wider">Cấu hình Giọng đọc AI (FPT.AI)</h4>
                         <p class="text-[10px] text-textSecondary leading-normal">Bạn có thể tạo tài khoản miễn phí tại <b>console.fpt.ai</b> để lấy API Key. Giọng đọc sẽ được tự động xử lý loại bỏ tất cả dấu câu và sử dụng giọng Hà Nội chuẩn phổ thông giống như con người đọc sách.</p>
                         <div class="flex gap-2">
-                            <input type="password" id="admin-fpt-key" value="${localStorage.getItem('bb_fpt_key') || ''}" oninput="localStorage.setItem('bb_fpt_key', this.value)" placeholder="Dán FPT.AI API Key của bạn vào đây" class="flex-1 px-3 py-2 text-xs border border-textSecondary/20 rounded-xl focus:outline-none focus:border-honeyYellow">
+                            <input type="password" id="admin-fpt-key" value="${localStorage.getItem('bb_fpt_key') || 'sUsUf2sWEhcLYaLAQYGkVNFjW6XGkMLG'}" oninput="localStorage.setItem('bb_fpt_key', this.value)" placeholder="Dán FPT.AI API Key của bạn vào đây" class="flex-1 px-3 py-2 text-xs border border-textSecondary/20 rounded-xl focus:outline-none focus:border-honeyYellow">
                             <select id="admin-fpt-voice" onchange="localStorage.setItem('bb_fpt_voice', this.value)" class="px-2 py-2 text-xs border border-textSecondary/20 rounded-xl bg-white focus:outline-none focus:border-honeyYellow">
                                 <option value="banmai" ${localStorage.getItem('bb_fpt_voice') === 'banmai' ? 'selected' : ''}>Nữ Hà Nội (Ban Mai)</option>
                                 <option value="leminh" ${localStorage.getItem('bb_fpt_voice') === 'leminh' ? 'selected' : ''}>Nam Hà Nội (Lê Minh)</option>
@@ -2493,11 +2493,7 @@
 
         // FPT.AI API Integration for Neural Vietnamese (Hanoi Accent) Speech Generation
         async function generatePageAudio(idx) {
-            const apiKey = localStorage.getItem('bb_fpt_key');
-            if (!apiKey) {
-                alert("Vui lòng dán FPT.AI API Key ở hộp cấu hình phía trên trước!");
-                return;
-            }
+            const apiKey = localStorage.getItem('bb_fpt_key') || 'sUsUf2sWEhcLYaLAQYGkVNFjW6XGkMLG';
             const voice = localStorage.getItem('bb_fpt_voice') || 'banmai';
             const text = Store.adminForm.pages[idx].text;
             if (!text) {
@@ -2517,6 +2513,7 @@
                     method: "POST",
                     headers: {
                         "api_key": apiKey,
+                        "api-key": apiKey,
                         "voice": voice,
                         "speed": "0",
                         "format": "mp3"
