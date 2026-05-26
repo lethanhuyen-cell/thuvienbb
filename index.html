@@ -24,13 +24,12 @@
                     },
                     fontFamily: {
                         vietnam: ['Be Vietnam Pro', 'sans-serif'],
-                        outfit: ['Outfit', 'sans-serif'],
                     }
                 }
             }
         }
     </script>
-    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Nunito:wght@400;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
     <style>
         body {
             font-family: 'Be Vietnam Pro', sans-serif;
@@ -312,10 +311,16 @@
             reader: {
                 story: null,
                 currentPage: 0,
-                currentSlide: 0,   // Each page = 2 slides: even=text, odd=image
                 isPlaying: false,
+                isTextHidden: false,
+                textSize: 'lg', // md, lg, xl
+                utterance: null,
+                timer: null,
                 isAutoFlip: false,
-                isOverlayVisible: true,
+                audioProgress: 0, // 0 to 100
+                audioTime: 0,
+                audioDuration: 15, // seconds per page simulation
+                highlightCharIndex: -1,
                 speechSupported: 'speechSynthesis' in window,
                 selectedVoice: localStorage.getItem('bb_selected_voice') || 'female',
             },
@@ -462,100 +467,284 @@
             }
         };
 
-        // ====== FPT.AI TTS ENGINE + WebSpeech Fallback ======
-        // FPT.AI: Đăng ký miễn phí tại https://console.fpt.ai → lấy API key → dán vào phần cài đặt giọng đọc trong app
+        // Text Speech Synthesizer with Highlighting & HTML5 Audio Integration
         const SpeechEngine = {
-            currentAudio: null,
-            webUtterance: null,
+            ttsTimer: null,
+            chunks: [],
+            currentChunkIndex: 0,
+            onBoundaryCallback: null,
+            onEndCallback: null,
+            isPlayingChunked: false,
+            htmlAudio: null,
             
-            async speak(text, onEnd) {
+            speak(text, onBoundary, onEnd) {
                 this.stop();
-                const apiKey = localStorage.getItem('bb_fpt_api_key') || '';
-                if (apiKey) {
-                    await this.fptSpeak(text, apiKey, onEnd);
-                } else {
-                    this.webSpeak(text, onEnd);
+                this.onBoundaryCallback = onBoundary;
+                this.onEndCallback = onEnd;
+                
+                // Play HTML5 audio file if available
+                const currentPage = Store.reader.story && Store.reader.story.pages ? Store.reader.story.pages[Store.reader.currentPage] : null;
+                if (currentPage && currentPage.audio) {
+                    this.playAudioFile(currentPage.audio, onEnd);
+                    return;
                 }
-            },
-
-            // --- FPT.AI TTS (Professional Vietnamese voice) ---
-            async fptSpeak(text, apiKey, onEnd) {
-                const voice = Store.reader.selectedVoice === 'female' ? 'linhsan' : 'minhquang';
-                try {
-                    const res = await fetch('https://api.fpt.ai/hmi/tts/v5', {
-                        method: 'POST',
-                        headers: {
-                            'api-key': apiKey,
-                            'voice': voice,
-                            'speed': '',
-                            'Content-Type': 'application/octet-stream'
-                        },
-                        body: text
-                    });
-                    const data = await res.json();
-                    if (data.error === 0 && data.async) {
-                        await this.playFPTAudio(data.async, onEnd, 8);
-                    } else {
-                        console.warn('FPT.AI error:', data);
-                        this.webSpeak(text, onEnd);
-                    }
-                } catch(e) {
-                    console.error('FPT.AI fetch error:', e);
-                    this.webSpeak(text, onEnd);
+                
+                if (!Store.reader.speechSupported) {
+                    this.fallbackSpeak(text, onEnd);
+                    return;
                 }
+                
+                // Phân tích văn bản thành các đoạn nhỏ dựa trên dấu câu và khoảng nghỉ tối ưu
+                this.chunks = this.parseTextToChunks(text);
+                this.currentChunkIndex = 0;
+                this.isPlayingChunked = true;
+                
+                this.speakNextChunk();
             },
-
-            async playFPTAudio(url, onEnd, retries) {
-                if (retries <= 0) { if (onEnd) onEnd(); return; }
-                try {
-                    const audio = new Audio();
-                    audio.crossOrigin = 'anonymous';
-                    this.currentAudio = audio;
-                    audio.src = url;
-                    audio.onended = () => { this.currentAudio = null; if (onEnd) onEnd(); };
-                    audio.onerror = async () => {
-                        await new Promise(r => setTimeout(r, 1200));
-                        if (this.currentAudio === audio) await this.playFPTAudio(url, onEnd, retries - 1);
-                    };
-                    const playPromise = audio.play();
-                    if (playPromise) playPromise.catch(async () => {
-                        await new Promise(r => setTimeout(r, 1200));
-                        if (this.currentAudio === audio) await this.playFPTAudio(url, onEnd, retries - 1);
-                    });
-                } catch(e) {
-                    if (onEnd) onEnd();
-                }
-            },
-
-            // --- Web Speech API Fallback (improved, no chunking) ---
-            webSpeak(text, onEnd) {
-                if (!('speechSynthesis' in window)) { if (onEnd) onEnd(); return; }
-                window.speechSynthesis.cancel();
-                const utterance = new SpeechSynthesisUtterance(text);
-                utterance.lang = 'vi-VN';
+            
+            playAudioFile(url, onEnd) {
+                this.htmlAudio = new Audio(url);
+                
+                // Adjust speed for bedtime vs standard
                 const isFemale = Store.reader.selectedVoice === 'female';
-                utterance.rate = isFemale ? 0.88 : 0.84;
-                utterance.pitch = isFemale ? 1.08 : 0.82;
-                // Pick best vi-VN voice available
-                const voices = window.speechSynthesis.getVoices();
-                const viVoices = voices.filter(v => v.lang.toLowerCase().startsWith('vi'));
-                if (viVoices.length > 0) {
-                    // Prefer Google / Neural voices
-                    const best = viVoices.find(v => v.name.toLowerCase().includes('google') || v.name.toLowerCase().includes('natural') || v.name.toLowerCase().includes('neural'))
-                                 || viVoices[0];
-                    utterance.voice = best;
+                this.htmlAudio.playbackRate = Store.currentScreen === 'bedtime' ? 0.85 : 0.95;
+                
+                this.htmlAudio.onended = () => {
+                    if (onEnd) onEnd();
+                };
+                
+                this.htmlAudio.onerror = (e) => {
+                    console.error("Audio file play error, falling back to Web Speech Synthesis", e);
+                    const currentPage = Store.reader.story && Store.reader.story.pages ? Store.reader.story.pages[Store.reader.currentPage] : null;
+                    if (currentPage) {
+                        this.speakWebSpeech(currentPage.text, onEnd);
+                    } else {
+                        if (onEnd) onEnd();
+                    }
+                };
+                
+                this.htmlAudio.ontimeupdate = () => {
+                    if (this.htmlAudio) {
+                        Store.reader.audioTime = Math.round(this.htmlAudio.currentTime);
+                        Store.reader.audioDuration = Math.round(this.htmlAudio.duration) || 15;
+                        Store.reader.audioProgress = (this.htmlAudio.currentTime / (this.htmlAudio.duration || 1)) * 100;
+                        renderProgressDisplayOnly();
+                    }
+                };
+                
+                this.htmlAudio.play().catch(err => {
+                    console.error("Audio play failed, falling back to Web Speech Synthesis", err);
+                    const currentPage = Store.reader.story && Store.reader.story.pages ? Store.reader.story.pages[Store.reader.currentPage] : null;
+                    if (currentPage) {
+                        this.speakWebSpeech(currentPage.text, onEnd);
+                    } else {
+                        if (onEnd) onEnd();
+                    }
+                });
+            },
+            
+            speakWebSpeech(text, onEnd) {
+                this.chunks = this.parseTextToChunks(text);
+                this.currentChunkIndex = 0;
+                this.isPlayingChunked = true;
+                this.speakNextChunk();
+            },
+            
+            parseTextToChunks(text) {
+                // Tách văn bản theo các dấu câu để tạo nhịp thở ngắt nghỉ
+                const regex = /([^,.;?!:—\-\n]+)([,.;?!:—\-\n]*)/g;
+                const chunks = [];
+                let match;
+                let charOffset = 0;
+                
+                while ((match = regex.exec(text)) !== null) {
+                    const phrase = match[1].trim();
+                    const punctuation = match[2];
+                    
+                    if (phrase.length > 0) {
+                        let pause = 350; // Khoảng nghỉ mặc định lấy hơi
+                        
+                        // Thiết lập khoảng nghỉ mô phỏng kênh Chú Mèo Đi Dép
+                        if (punctuation.includes('.') || punctuation.includes('?') || punctuation.includes('!') || punctuation.includes('\n')) {
+                            pause = 1200; // Nghỉ hết câu dài hơn để trẻ tiêu hóa thông tin
+                        } else if (punctuation.includes(',') || punctuation.includes(';') || punctuation.includes(':') || punctuation.includes('—') || punctuation.includes('-')) {
+                            pause = 550; // Nghỉ giữa các vế câu
+                        }
+                        
+                        chunks.push({
+                            text: phrase + (punctuation ? ' ' : ''),
+                            pause: pause,
+                            charIndex: charOffset
+                        });
+                    }
+                    charOffset += match[0].length;
                 }
-                utterance.onend = () => { if (onEnd) onEnd(); };
-                utterance.onerror = () => { if (onEnd) onEnd(); };
-                this.webUtterance = utterance;
+                
+                if (chunks.length === 0 && text.trim().length > 0) {
+                    chunks.push({
+                        text: text,
+                        pause: 1000,
+                        charIndex: 0
+                    });
+                }
+                
+                return chunks;
+            },
+            
+            speakNextChunk() {
+                if (!this.isPlayingChunked || this.currentChunkIndex >= this.chunks.length) {
+                    this.isPlayingChunked = false;
+                    if (this.onEndCallback) this.onEndCallback();
+                    return;
+                }
+                
+                const chunk = this.chunks[this.currentChunkIndex];
+                window.speechSynthesis.cancel();
+                
+                const utterance = new SpeechSynthesisUtterance(chunk.text);
+                utterance.lang = 'vi-VN';
+                
+                const isFemale = Store.reader.selectedVoice === 'female';
+                
+                // Thiết lập tốc độ đọc chậm rãi, giàu cảm xúc truyền cảm giống kênh Chú Mèo Đi Dép
+                // Nữ: 0.80 (ngọt ngào, trong trẻo), Nam: 0.76 (trầm ấm, kể chuyện)
+                if (Store.currentScreen === 'bedtime') {
+                    utterance.rate = isFemale ? 0.74 : 0.68;
+                    utterance.pitch = isFemale ? 1.08 : 0.72;
+                } else {
+                    utterance.rate = isFemale ? 0.80 : 0.76;
+                    utterance.pitch = isFemale ? 1.12 : 0.75;
+                }
+                
+                const voices = window.speechSynthesis.getVoices();
+                const viVoices = voices.filter(v => 
+                    v.lang.toLowerCase().replace('_', '-').includes('vi-vn') || 
+                    v.lang.toLowerCase().includes('vi')
+                );
+                
+                if (viVoices.length > 0) {
+                    let preferredVoices = viVoices.filter(v => {
+                        const name = v.name.toLowerCase();
+                        if (isFemale) {
+                            return name.includes('female') || name.includes('nữ') || name.includes('linh') || name.includes('lan') || name.includes('an') || name.includes('zira') || name.includes('chi');
+                        } else {
+                            return name.includes('male') || name.includes('nam') || name.includes('tuan') || name.includes('minh') || name.includes('hung') || name.includes('david') || name.includes('hoai');
+                        }
+                    });
+                    
+                    if (preferredVoices.length === 0) preferredVoices = viVoices;
+                    
+                    preferredVoices.sort((a, b) => {
+                        const nameA = a.name.toLowerCase();
+                        const nameB = b.name.toLowerCase();
+                        const getScore = (voice, name) => {
+                            let score = 0;
+                            if (voice.localService === false) score += 10;
+                            if (name.includes('natural') || name.includes('neural') || name.includes('multilingual')) score += 15;
+                            if (name.includes('premium')) score += 8;
+                            return score;
+                        };
+                        return getScore(b, nameB) - getScore(a, nameA);
+                    });
+                    
+                    utterance.voice = preferredVoices[0];
+                }
+                
+                utterance.onboundary = (e) => {
+                    if (e.name === 'word') {
+                        if (this.onBoundaryCallback) {
+                            // Cập nhật vị trí bôi đậm chữ chính xác tuyệt đối trên trang truyện
+                            this.onBoundaryCallback(chunk.charIndex + e.charIndex);
+                        }
+                    }
+                };
+                
+                utterance.onend = () => {
+                    this.currentChunkIndex++;
+                    if (this.currentChunkIndex < this.chunks.length) {
+                        // Nghỉ một nhịp lấy hơi trước khi đọc vế/câu tiếp theo
+                        this.ttsTimer = setTimeout(() => {
+                            this.speakNextChunk();
+                        }, chunk.pause);
+                    } else {
+                        this.isPlayingChunked = false;
+                        if (this.onEndCallback) this.onEndCallback();
+                    }
+                };
+                
+                utterance.onerror = (err) => {
+                    console.error("Speech Synthesis Chunk Error", err);
+                    this.currentChunkIndex++;
+                    this.speakNextChunk();
+                };
+                
+                Store.reader.utterance = utterance;
                 window.speechSynthesis.speak(utterance);
             },
             
+            pause() {
+                this.isPlayingChunked = false;
+                if (this.htmlAudio) {
+                    this.htmlAudio.pause();
+                }
+                if (Store.reader.speechSupported) {
+                    window.speechSynthesis.cancel();
+                }
+                if (this.ttsTimer) clearTimeout(this.ttsTimer);
+            },
+            
+            resume(text, onBoundary, onEnd) {
+                if (this.htmlAudio) {
+                    this.htmlAudio.play().catch(e => console.error(e));
+                } else {
+                    this.isPlayingChunked = true;
+                    this.speakNextChunk();
+                }
+            },
+            
+            stop() {
+                this.isPlayingChunked = false;
+                if (this.htmlAudio) {
+                    this.htmlAudio.pause();
+                    this.htmlAudio = null;
+                }
+                if (Store.reader.speechSupported) {
+                    window.speechSynthesis.cancel();
+                }
+                if (this.ttsTimer) clearTimeout(this.ttsTimer);
+                this.chunks = [];
+                this.currentChunkIndex = 0;
+            },
+            
+            fallbackSpeak(text, onEnd) {
+                const words = text.split(' ');
+                let currentWordIndex = 0;
+                const msPerWord = 480; // Nhịp điệu chậm rãi giống Chú Mèo Đi Dép
+                
+                const tick = () => {
+                    if (!Store.reader.isPlaying) return;
+                    if (currentWordIndex >= words.length) {
+                        onEnd();
+                        return;
+                    }
+                    const charIndex = words.slice(0, currentWordIndex).join(' ').length + (currentWordIndex > 0 ? 1 : 0);
+                    Store.reader.highlightCharIndex = charIndex;
+                    updateReaderTextDisplay();
+                    
+                    currentWordIndex++;
+                    this.ttsTimer = setTimeout(tick, msPerWord);
+                };
+                
+                tick();
+            }
+        };
 
+        // Navigation
         function navigateTo(screen, params = {}) {
             // Stop active narration
             SpeechEngine.stop();
             Store.reader.isPlaying = false;
+            if (Store.reader.timer) clearInterval(Store.reader.timer);
             
             // Stop Bedtime synthesizers if leaving Bedtime mode
             if (Store.currentScreen === 'bedtime' && screen !== 'bedtime') {
@@ -571,15 +760,17 @@
             } else if (screen === 'reader') {
                 const story = Store.stories.find(s => s.id === params.storyId);
                 Store.reader.story = story;
-                // Get saved reading progress (page-based → convert to slide)
+                
+                // Get saved reading progress
                 let pageProgress = Store.readingProgress[story.id] || 0;
                 if (story.pages && (pageProgress >= story.pages.length || pageProgress < 0)) {
                     pageProgress = 0;
                 }
                 Store.reader.currentPage = pageProgress;
-                Store.reader.currentSlide = pageProgress * 2; // start on text slide
                 Store.reader.isPlaying = false;
-                Store.reader.isOverlayVisible = true;
+                Store.reader.audioProgress = 0;
+                Store.reader.audioTime = 0;
+                Store.reader.highlightCharIndex = -1;
             } else if (screen === 'bedtime') {
                 initBedtimePlaylist();
             }
@@ -623,6 +814,7 @@
 
         // ================= RENDERING TEMPLATES =================
 
+        // Header Component
         function renderHeader() {
             let backButton = '';
             let title = 'Bảo Bối';
@@ -1721,18 +1913,20 @@
                 }
             );
 
-            // Simulating seek progress bar
-            const startTime = Date.now() - (Store.reader.audioTime * 1000);
-            Store.reader.timer = setInterval(() => {
-                const elapsed = Math.round((Date.now() - startTime) / 1000);
-                if (elapsed <= Store.reader.audioDuration) {
-                    Store.reader.audioTime = elapsed;
-                    Store.reader.audioProgress = (elapsed / Store.reader.audioDuration) * 100;
-                    renderProgressDisplayOnly();
-                } else {
-                    clearInterval(Store.reader.timer);
-                }
-            }, 500);
+            // Simulating seek progress bar (Only if NOT playing a real HTML Audio file)
+            if (!SpeechEngine.htmlAudio) {
+                const startTime = Date.now() - (Store.reader.audioTime * 1000);
+                Store.reader.timer = setInterval(() => {
+                    const elapsed = Math.round((Date.now() - startTime) / 1000);
+                    if (elapsed <= Store.reader.audioDuration) {
+                        Store.reader.audioTime = elapsed;
+                        Store.reader.audioProgress = (elapsed / Store.reader.audioDuration) * 100;
+                        renderProgressDisplayOnly();
+                    } else {
+                        clearInterval(Store.reader.timer);
+                    }
+                }, 500);
+            }
         }
 
         function renderProgressDisplayOnly() {
@@ -2104,7 +2298,23 @@
                     </div>
 
                     <!-- Add Story Form -->
-                    <h3 class="text-xs font-bold text-textSecondary uppercase tracking-wider mb-2.5">Tải lên truyện mới</h3>
+                    <h3 class="text-xs font-bold text-textSecondary uppercase tracking-wider mb-2.5">Cấu hình Giọng đọc AI & Tải lên truyện mới</h3>
+                    
+                    <!-- FPT.AI Config Box -->
+                    <div class="bg-[#FFF9EE] p-4 rounded-2xl border border-textSecondary/10 shadow-sm mb-4 space-y-3">
+                        <h4 class="text-xs font-bold text-textPrimary uppercase tracking-wider">Cấu hình Giọng đọc AI (FPT.AI)</h4>
+                        <p class="text-[10px] text-textSecondary leading-normal">Bạn có thể tạo tài khoản miễn phí tại <b>console.fpt.ai</b> để lấy API Key. Giọng đọc sẽ được tự động xử lý loại bỏ tất cả dấu câu và sử dụng giọng Hà Nội chuẩn phổ thông giống như con người đọc sách.</p>
+                        <div class="flex gap-2">
+                            <input type="password" id="admin-fpt-key" value="${localStorage.getItem('bb_fpt_key') || ''}" oninput="localStorage.setItem('bb_fpt_key', this.value)" placeholder="Dán FPT.AI API Key của bạn vào đây" class="flex-1 px-3 py-2 text-xs border border-textSecondary/20 rounded-xl focus:outline-none focus:border-honeyYellow">
+                            <select id="admin-fpt-voice" onchange="localStorage.setItem('bb_fpt_voice', this.value)" class="px-2 py-2 text-xs border border-textSecondary/20 rounded-xl bg-white focus:outline-none focus:border-honeyYellow">
+                                <option value="banmai" ${localStorage.getItem('bb_fpt_voice') === 'banmai' ? 'selected' : ''}>Nữ Hà Nội (Ban Mai)</option>
+                                <option value="leminh" ${localStorage.getItem('bb_fpt_voice') === 'leminh' ? 'selected' : ''}>Nam Hà Nội (Lê Minh)</option>
+                                <option value="lannhi" ${localStorage.getItem('bb_fpt_voice') === 'lannhi' ? 'selected' : ''}>Nữ Nam Bộ (Lan Nhi)</option>
+                                <option value="minhquang" ${localStorage.getItem('bb_fpt_voice') === 'minhquang' ? 'selected' : ''}>Nam Trung Bộ (Minh Quang)</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div class="bg-cardLight p-4 rounded-2xl border border-textSecondary/10 shadow-sm space-y-4">
                         
                         <!-- Metadata Fields -->
@@ -2157,12 +2367,20 @@
                                         <div class="flex gap-2">
                                             <div class="w-14">
                                                 <label class="block text-[9px] font-bold text-textSecondary mb-0.5">Icon Tranh</label>
-                                                <input type="text" value="${p.imageSvgText}" oninput="updateAdminPageField(${idx}, 'imageSvgText', this.value)" class="w-full text-center px-1 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none">
+                                                <input type="text" value="${p.imageSvgText || '🧸'}" oninput="updateAdminPageField(${idx}, 'imageSvgText', this.value)" class="w-full text-center px-1 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none">
                                             </div>
                                             <div class="flex-1">
                                                 <label class="block text-[9px] font-bold text-textSecondary mb-0.5">Chữ hiển thị</label>
-                                                <textarea oninput="updateAdminPageField(${idx}, 'text', this.value)" placeholder="Lời kể truyện..." rows="2" class="w-full px-2 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none focus:border-honeyYellow">${p.text}</textarea>
+                                                <textarea oninput="updateAdminPageField(${idx}, 'text', this.value)" placeholder="Lời kể truyện..." rows="2" class="w-full px-2 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none focus:border-honeyYellow">${p.text || ''}</textarea>
                                             </div>
+                                        </div>
+                                        
+                                        <!-- Audio Generator UI -->
+                                        <div class="flex gap-2 items-center pt-2 border-t border-textPrimary/5">
+                                            <button onclick="generatePageAudio(${idx})" id="btn-gen-audio-${idx}" class="text-[9px] font-bold bg-[#F6C65B]/20 text-textPrimary px-2.5 py-1.5 rounded-lg active:scale-95 transition-transform flex-shrink-0 flex items-center gap-1">
+                                                🎙️ Tạo Audio AI (Hà Nội)
+                                            </button>
+                                            <input type="text" id="admin-page-audio-${idx}" value="${p.audio || ''}" oninput="updateAdminPageField(${idx}, 'audio', this.value)" placeholder="Chưa có audio file, click nút bên để tạo tự động" class="flex-1 px-2 py-1.5 text-[9px] border border-textSecondary/20 rounded-lg bg-white text-textPrimary focus:outline-none">
                                         </div>
                                     </div>
                                 `).join('')}
@@ -2214,7 +2432,8 @@
                 const dynamicSvg = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='100%' height='100%' fill='%23FFF9EE'/><text x='50%' y='40%' font-size='100' text-anchor='middle'>${svgText}</text><text x='50%' y='65%' font-size='28' font-family='sans-serif' font-weight='bold' fill='%231f2430' text-anchor='middle'>Trang Truyện Số ${idx + 1}</text></svg>`;
                 return {
                     image: dynamicSvg,
-                    text: p.text || `Nội dung lời kể cho trang ${idx + 1} của truyện.`
+                    text: p.text || `Nội dung lời kể cho trang ${idx + 1} của truyện.`,
+                    audio: p.audio || ''  // Save custom neural audio link
                 };
             });
 
@@ -2265,11 +2484,91 @@
                 author: '',
                 duration: '5 phút',
                 summary: '',
-                pages: [{ text: '', imageSvgText: '🧸' }]
+                pages: [{ text: '', imageSvgText: '🧸', audio: '' }]
             };
 
             alert("Đăng truyện thành công! Truyện của chị đã có mặt ngoài Trang chủ.");
             navigateTo('home');
+        }
+
+        // FPT.AI API Integration for Neural Vietnamese (Hanoi Accent) Speech Generation
+        async function generatePageAudio(idx) {
+            const apiKey = localStorage.getItem('bb_fpt_key');
+            if (!apiKey) {
+                alert("Vui lòng dán FPT.AI API Key ở hộp cấu hình phía trên trước!");
+                return;
+            }
+            const voice = localStorage.getItem('bb_fpt_voice') || 'banmai';
+            const text = Store.adminForm.pages[idx].text;
+            if (!text) {
+                alert("Vui lòng nhập lời kể cho trang này trước khi tạo Audio!");
+                return;
+            }
+
+            // Clean text to avoid reading punctuation: "không đọc các dấu câu"
+            const cleanedText = text.replace(/[,.;?!:—\-\"\'\(\)\[\]\{\}]/g, ' ');
+
+            const btn = document.getElementById(`btn-gen-audio-${idx}`);
+            btn.disabled = true;
+            btn.innerHTML = "⏳ Đang tạo...";
+
+            try {
+                const response = await fetch("https://api.fpt.ai/hmi/tts/v5", {
+                    method: "POST",
+                    headers: {
+                        "api_key": apiKey,
+                        "voice": voice,
+                        "speed": "0",
+                        "format": "mp3"
+                    },
+                    body: cleanedText
+                });
+                const data = await response.json();
+                
+                if (data.async) {
+                    // Poll status of async audio building
+                    let attempts = 0;
+                    const checkUrl = data.async;
+                    const interval = setInterval(async () => {
+                        attempts++;
+                        if (attempts > 20) {
+                            clearInterval(interval);
+                            btn.disabled = false;
+                            btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                            alert("Tạo audio quá thời gian chờ (Timeout). Vui lòng thử lại!");
+                            return;
+                        }
+
+                        try {
+                            // Check file status
+                            const statusRes = await fetch(checkUrl);
+                            if (statusRes.status === 200) {
+                                clearInterval(interval);
+                                updateAdminPageField(idx, 'audio', checkUrl);
+                                btn.disabled = false;
+                                btn.innerHTML = "✅ Hoàn thành";
+                                render();
+                            }
+                        } catch(e) {
+                            // Ignore fetch errors during creation
+                        }
+                    }, 2000);
+                } else if (data.success === "true" || data.message) {
+                    updateAdminPageField(idx, 'audio', data.message || data.async);
+                    btn.disabled = false;
+                    btn.innerHTML = "✅ Hoàn thành";
+                    render();
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                    alert("Lỗi từ FPT.AI: " + (data.message || "Không xác định"));
+                }
+            } catch (error) {
+                console.error("FPT AI connection error", error);
+                btn.disabled = false;
+                btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                alert("Lỗi kết nối API: " + error.message);
+            }
         }
 
         function deleteCustomStory(id) {

@@ -2298,7 +2298,23 @@
                     </div>
 
                     <!-- Add Story Form -->
-                    <h3 class="text-xs font-bold text-textSecondary uppercase tracking-wider mb-2.5">Tải lên truyện mới</h3>
+                    <h3 class="text-xs font-bold text-textSecondary uppercase tracking-wider mb-2.5">Cấu hình Giọng đọc AI & Tải lên truyện mới</h3>
+                    
+                    <!-- FPT.AI Config Box -->
+                    <div class="bg-[#FFF9EE] p-4 rounded-2xl border border-textSecondary/10 shadow-sm mb-4 space-y-3">
+                        <h4 class="text-xs font-bold text-textPrimary uppercase tracking-wider">Cấu hình Giọng đọc AI (FPT.AI)</h4>
+                        <p class="text-[10px] text-textSecondary leading-normal">Bạn có thể tạo tài khoản miễn phí tại <b>console.fpt.ai</b> để lấy API Key. Giọng đọc sẽ được tự động xử lý loại bỏ tất cả dấu câu và sử dụng giọng Hà Nội chuẩn phổ thông giống như con người đọc sách.</p>
+                        <div class="flex gap-2">
+                            <input type="password" id="admin-fpt-key" value="${localStorage.getItem('bb_fpt_key') || ''}" oninput="localStorage.setItem('bb_fpt_key', this.value)" placeholder="Dán FPT.AI API Key của bạn vào đây" class="flex-1 px-3 py-2 text-xs border border-textSecondary/20 rounded-xl focus:outline-none focus:border-honeyYellow">
+                            <select id="admin-fpt-voice" onchange="localStorage.setItem('bb_fpt_voice', this.value)" class="px-2 py-2 text-xs border border-textSecondary/20 rounded-xl bg-white focus:outline-none focus:border-honeyYellow">
+                                <option value="banmai" ${localStorage.getItem('bb_fpt_voice') === 'banmai' ? 'selected' : ''}>Nữ Hà Nội (Ban Mai)</option>
+                                <option value="leminh" ${localStorage.getItem('bb_fpt_voice') === 'leminh' ? 'selected' : ''}>Nam Hà Nội (Lê Minh)</option>
+                                <option value="lannhi" ${localStorage.getItem('bb_fpt_voice') === 'lannhi' ? 'selected' : ''}>Nữ Nam Bộ (Lan Nhi)</option>
+                                <option value="minhquang" ${localStorage.getItem('bb_fpt_voice') === 'minhquang' ? 'selected' : ''}>Nam Trung Bộ (Minh Quang)</option>
+                            </select>
+                        </div>
+                    </div>
+
                     <div class="bg-cardLight p-4 rounded-2xl border border-textSecondary/10 shadow-sm space-y-4">
                         
                         <!-- Metadata Fields -->
@@ -2351,12 +2367,20 @@
                                         <div class="flex gap-2">
                                             <div class="w-14">
                                                 <label class="block text-[9px] font-bold text-textSecondary mb-0.5">Icon Tranh</label>
-                                                <input type="text" value="${p.imageSvgText}" oninput="updateAdminPageField(${idx}, 'imageSvgText', this.value)" class="w-full text-center px-1 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none">
+                                                <input type="text" value="${p.imageSvgText || '🧸'}" oninput="updateAdminPageField(${idx}, 'imageSvgText', this.value)" class="w-full text-center px-1 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none">
                                             </div>
                                             <div class="flex-1">
                                                 <label class="block text-[9px] font-bold text-textSecondary mb-0.5">Chữ hiển thị</label>
-                                                <textarea oninput="updateAdminPageField(${idx}, 'text', this.value)" placeholder="Lời kể truyện..." rows="2" class="w-full px-2 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none focus:border-honeyYellow">${p.text}</textarea>
+                                                <textarea oninput="updateAdminPageField(${idx}, 'text', this.value)" placeholder="Lời kể truyện..." rows="2" class="w-full px-2 py-1 text-xs border border-textSecondary/20 rounded-lg focus:outline-none focus:border-honeyYellow">${p.text || ''}</textarea>
                                             </div>
+                                        </div>
+                                        
+                                        <!-- Audio Generator UI -->
+                                        <div class="flex gap-2 items-center pt-2 border-t border-textPrimary/5">
+                                            <button onclick="generatePageAudio(${idx})" id="btn-gen-audio-${idx}" class="text-[9px] font-bold bg-[#F6C65B]/20 text-textPrimary px-2.5 py-1.5 rounded-lg active:scale-95 transition-transform flex-shrink-0 flex items-center gap-1">
+                                                🎙️ Tạo Audio AI (Hà Nội)
+                                            </button>
+                                            <input type="text" id="admin-page-audio-${idx}" value="${p.audio || ''}" oninput="updateAdminPageField(${idx}, 'audio', this.value)" placeholder="Chưa có audio file, click nút bên để tạo tự động" class="flex-1 px-2 py-1.5 text-[9px] border border-textSecondary/20 rounded-lg bg-white text-textPrimary focus:outline-none">
                                         </div>
                                     </div>
                                 `).join('')}
@@ -2408,7 +2432,8 @@
                 const dynamicSvg = `data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='800' height='600' viewBox='0 0 800 600'><rect width='100%' height='100%' fill='%23FFF9EE'/><text x='50%' y='40%' font-size='100' text-anchor='middle'>${svgText}</text><text x='50%' y='65%' font-size='28' font-family='sans-serif' font-weight='bold' fill='%231f2430' text-anchor='middle'>Trang Truyện Số ${idx + 1}</text></svg>`;
                 return {
                     image: dynamicSvg,
-                    text: p.text || `Nội dung lời kể cho trang ${idx + 1} của truyện.`
+                    text: p.text || `Nội dung lời kể cho trang ${idx + 1} của truyện.`,
+                    audio: p.audio || ''  // Save custom neural audio link
                 };
             });
 
@@ -2459,11 +2484,91 @@
                 author: '',
                 duration: '5 phút',
                 summary: '',
-                pages: [{ text: '', imageSvgText: '🧸' }]
+                pages: [{ text: '', imageSvgText: '🧸', audio: '' }]
             };
 
             alert("Đăng truyện thành công! Truyện của chị đã có mặt ngoài Trang chủ.");
             navigateTo('home');
+        }
+
+        // FPT.AI API Integration for Neural Vietnamese (Hanoi Accent) Speech Generation
+        async function generatePageAudio(idx) {
+            const apiKey = localStorage.getItem('bb_fpt_key');
+            if (!apiKey) {
+                alert("Vui lòng dán FPT.AI API Key ở hộp cấu hình phía trên trước!");
+                return;
+            }
+            const voice = localStorage.getItem('bb_fpt_voice') || 'banmai';
+            const text = Store.adminForm.pages[idx].text;
+            if (!text) {
+                alert("Vui lòng nhập lời kể cho trang này trước khi tạo Audio!");
+                return;
+            }
+
+            // Clean text to avoid reading punctuation: "không đọc các dấu câu"
+            const cleanedText = text.replace(/[,.;?!:—\-\"\'\(\)\[\]\{\}]/g, ' ');
+
+            const btn = document.getElementById(`btn-gen-audio-${idx}`);
+            btn.disabled = true;
+            btn.innerHTML = "⏳ Đang tạo...";
+
+            try {
+                const response = await fetch("https://api.fpt.ai/hmi/tts/v5", {
+                    method: "POST",
+                    headers: {
+                        "api_key": apiKey,
+                        "voice": voice,
+                        "speed": "0",
+                        "format": "mp3"
+                    },
+                    body: cleanedText
+                });
+                const data = await response.json();
+                
+                if (data.async) {
+                    // Poll status of async audio building
+                    let attempts = 0;
+                    const checkUrl = data.async;
+                    const interval = setInterval(async () => {
+                        attempts++;
+                        if (attempts > 20) {
+                            clearInterval(interval);
+                            btn.disabled = false;
+                            btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                            alert("Tạo audio quá thời gian chờ (Timeout). Vui lòng thử lại!");
+                            return;
+                        }
+
+                        try {
+                            // Check file status
+                            const statusRes = await fetch(checkUrl);
+                            if (statusRes.status === 200) {
+                                clearInterval(interval);
+                                updateAdminPageField(idx, 'audio', checkUrl);
+                                btn.disabled = false;
+                                btn.innerHTML = "✅ Hoàn thành";
+                                render();
+                            }
+                        } catch(e) {
+                            // Ignore fetch errors during creation
+                        }
+                    }, 2000);
+                } else if (data.success === "true" || data.message) {
+                    updateAdminPageField(idx, 'audio', data.message || data.async);
+                    btn.disabled = false;
+                    btn.innerHTML = "✅ Hoàn thành";
+                    render();
+                } else {
+                    btn.disabled = false;
+                    btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                    alert("Lỗi từ FPT.AI: " + (data.message || "Không xác định"));
+                }
+            } catch (error) {
+                console.error("FPT AI connection error", error);
+                btn.disabled = false;
+                btn.innerHTML = "🎙️ Tạo Audio AI (Hà Nội)";
+                alert("Lỗi kết nối API: " + error.message);
+            }
         }
 
         function deleteCustomStory(id) {
