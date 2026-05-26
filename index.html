@@ -24,12 +24,13 @@
                     },
                     fontFamily: {
                         vietnam: ['Be Vietnam Pro', 'sans-serif'],
+                        outfit: ['Outfit', 'sans-serif'],
                     }
                 }
             }
         }
     </script>
-    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Nunito:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=Nunito:wght@400;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
         body {
             font-family: 'Be Vietnam Pro', sans-serif;
@@ -311,16 +312,10 @@
             reader: {
                 story: null,
                 currentPage: 0,
+                currentSlide: 0,   // Each page = 2 slides: even=text, odd=image
                 isPlaying: false,
-                isTextHidden: false,
-                textSize: 'lg', // md, lg, xl
-                utterance: null,
-                timer: null,
                 isAutoFlip: false,
-                audioProgress: 0, // 0 to 100
-                audioTime: 0,
-                audioDuration: 15, // seconds per page simulation
-                highlightCharIndex: -1,
+                isOverlayVisible: true,
                 speechSupported: 'speechSynthesis' in window,
                 selectedVoice: localStorage.getItem('bb_selected_voice') || 'female',
             },
@@ -467,218 +462,100 @@
             }
         };
 
-        // Text Speech Synthesizer with Highlighting
+        // ====== FPT.AI TTS ENGINE + WebSpeech Fallback ======
+        // FPT.AI: Đăng ký miễn phí tại https://console.fpt.ai → lấy API key → dán vào phần cài đặt giọng đọc trong app
         const SpeechEngine = {
-            ttsTimer: null,
-            chunks: [],
-            currentChunkIndex: 0,
-            onBoundaryCallback: null,
-            onEndCallback: null,
-            isPlayingChunked: false,
+            currentAudio: null,
+            webUtterance: null,
             
-            speak(text, onBoundary, onEnd) {
+            async speak(text, onEnd) {
                 this.stop();
-                
-                this.onBoundaryCallback = onBoundary;
-                this.onEndCallback = onEnd;
-                
-                if (!Store.reader.speechSupported) {
-                    this.fallbackSpeak(text, onEnd);
-                    return;
-                }
-                
-                // Phân tích văn bản thành các đoạn nhỏ dựa trên dấu câu và khoảng nghỉ tối ưu
-                this.chunks = this.parseTextToChunks(text);
-                this.currentChunkIndex = 0;
-                this.isPlayingChunked = true;
-                
-                this.speakNextChunk();
-            },
-            
-            parseTextToChunks(text) {
-                // Tách văn bản theo các dấu câu để tạo nhịp thở ngắt nghỉ
-                const regex = /([^,.;?!:—\-\n]+)([,.;?!:—\-\n]*)/g;
-                const chunks = [];
-                let match;
-                let charOffset = 0;
-                
-                while ((match = regex.exec(text)) !== null) {
-                    const phrase = match[1].trim();
-                    const punctuation = match[2];
-                    
-                    if (phrase.length > 0) {
-                        let pause = 350; // Khoảng nghỉ mặc định lấy hơi
-                        
-                        // Thiết lập khoảng nghỉ mô phỏng kênh Chú Mèo Đi Dép
-                        if (punctuation.includes('.') || punctuation.includes('?') || punctuation.includes('!') || punctuation.includes('\n')) {
-                            pause = 1200; // Nghỉ hết câu dài hơn để trẻ tiêu hóa thông tin
-                        } else if (punctuation.includes(',') || punctuation.includes(';') || punctuation.includes(':') || punctuation.includes('—') || punctuation.includes('-')) {
-                            pause = 550; // Nghỉ giữa các vế câu
-                        }
-                        
-                        chunks.push({
-                            text: phrase + (punctuation ? ' ' : ''),
-                            pause: pause,
-                            charIndex: charOffset
-                        });
-                    }
-                    charOffset += match[0].length;
-                }
-                
-                if (chunks.length === 0 && text.trim().length > 0) {
-                    chunks.push({
-                        text: text,
-                        pause: 1000,
-                        charIndex: 0
-                    });
-                }
-                
-                return chunks;
-            },
-            
-            speakNextChunk() {
-                if (!this.isPlayingChunked || this.currentChunkIndex >= this.chunks.length) {
-                    this.isPlayingChunked = false;
-                    if (this.onEndCallback) this.onEndCallback();
-                    return;
-                }
-                
-                const chunk = this.chunks[this.currentChunkIndex];
-                window.speechSynthesis.cancel();
-                
-                const utterance = new SpeechSynthesisUtterance(chunk.text);
-                utterance.lang = 'vi-VN';
-                
-                const isFemale = Store.reader.selectedVoice === 'female';
-                
-                // Thiết lập tốc độ đọc chậm rãi, giàu cảm xúc truyền cảm giống kênh Chú Mèo Đi Dép
-                // Nữ: 0.80 (ngọt ngào, trong trẻo), Nam: 0.76 (trầm ấm, kể chuyện)
-                if (Store.currentScreen === 'bedtime') {
-                    utterance.rate = isFemale ? 0.74 : 0.68;
-                    utterance.pitch = isFemale ? 1.08 : 0.72;
+                const apiKey = localStorage.getItem('bb_fpt_api_key') || '';
+                if (apiKey) {
+                    await this.fptSpeak(text, apiKey, onEnd);
                 } else {
-                    utterance.rate = isFemale ? 0.80 : 0.76;
-                    utterance.pitch = isFemale ? 1.12 : 0.75;
+                    this.webSpeak(text, onEnd);
                 }
-                
-                const voices = window.speechSynthesis.getVoices();
-                const viVoices = voices.filter(v => 
-                    v.lang.toLowerCase().replace('_', '-').includes('vi-vn') || 
-                    v.lang.toLowerCase().includes('vi')
-                );
-                
-                if (viVoices.length > 0) {
-                    let preferredVoices = viVoices.filter(v => {
-                        const name = v.name.toLowerCase();
-                        if (isFemale) {
-                            return name.includes('female') || name.includes('nữ') || name.includes('linh') || name.includes('lan') || name.includes('an') || name.includes('zira') || name.includes('chi');
-                        } else {
-                            return name.includes('male') || name.includes('nam') || name.includes('tuan') || name.includes('minh') || name.includes('hung') || name.includes('david') || name.includes('hoai');
-                        }
+            },
+
+            // --- FPT.AI TTS (Professional Vietnamese voice) ---
+            async fptSpeak(text, apiKey, onEnd) {
+                const voice = Store.reader.selectedVoice === 'female' ? 'linhsan' : 'minhquang';
+                try {
+                    const res = await fetch('https://api.fpt.ai/hmi/tts/v5', {
+                        method: 'POST',
+                        headers: {
+                            'api-key': apiKey,
+                            'voice': voice,
+                            'speed': '',
+                            'Content-Type': 'application/octet-stream'
+                        },
+                        body: text
                     });
-                    
-                    if (preferredVoices.length === 0) preferredVoices = viVoices;
-                    
-                    preferredVoices.sort((a, b) => {
-                        const nameA = a.name.toLowerCase();
-                        const nameB = b.name.toLowerCase();
-                        const getScore = (voice, name) => {
-                            let score = 0;
-                            if (voice.localService === false) score += 10;
-                            if (name.includes('natural') || name.includes('neural') || name.includes('multilingual')) score += 15;
-                            if (name.includes('premium')) score += 8;
-                            return score;
-                        };
-                        return getScore(b, nameB) - getScore(a, nameA);
-                    });
-                    
-                    utterance.voice = preferredVoices[0];
-                }
-                
-                utterance.onboundary = (e) => {
-                    if (e.name === 'word') {
-                        if (this.onBoundaryCallback) {
-                            // Cập nhật vị trí bôi đậm chữ chính xác tuyệt đối trên trang truyện
-                            this.onBoundaryCallback(chunk.charIndex + e.charIndex);
-                        }
-                    }
-                };
-                
-                utterance.onend = () => {
-                    this.currentChunkIndex++;
-                    if (this.currentChunkIndex < this.chunks.length) {
-                        // Nghỉ một nhịp lấy hơi trước khi đọc vế/câu tiếp theo
-                        this.ttsTimer = setTimeout(() => {
-                            this.speakNextChunk();
-                        }, chunk.pause);
+                    const data = await res.json();
+                    if (data.error === 0 && data.async) {
+                        await this.playFPTAudio(data.async, onEnd, 8);
                     } else {
-                        this.isPlayingChunked = false;
-                        if (this.onEndCallback) this.onEndCallback();
+                        console.warn('FPT.AI error:', data);
+                        this.webSpeak(text, onEnd);
                     }
-                };
-                
-                utterance.onerror = (err) => {
-                    console.error("Speech Synthesis Chunk Error", err);
-                    this.currentChunkIndex++;
-                    this.speakNextChunk();
-                };
-                
-                Store.reader.utterance = utterance;
+                } catch(e) {
+                    console.error('FPT.AI fetch error:', e);
+                    this.webSpeak(text, onEnd);
+                }
+            },
+
+            async playFPTAudio(url, onEnd, retries) {
+                if (retries <= 0) { if (onEnd) onEnd(); return; }
+                try {
+                    const audio = new Audio();
+                    audio.crossOrigin = 'anonymous';
+                    this.currentAudio = audio;
+                    audio.src = url;
+                    audio.onended = () => { this.currentAudio = null; if (onEnd) onEnd(); };
+                    audio.onerror = async () => {
+                        await new Promise(r => setTimeout(r, 1200));
+                        if (this.currentAudio === audio) await this.playFPTAudio(url, onEnd, retries - 1);
+                    };
+                    const playPromise = audio.play();
+                    if (playPromise) playPromise.catch(async () => {
+                        await new Promise(r => setTimeout(r, 1200));
+                        if (this.currentAudio === audio) await this.playFPTAudio(url, onEnd, retries - 1);
+                    });
+                } catch(e) {
+                    if (onEnd) onEnd();
+                }
+            },
+
+            // --- Web Speech API Fallback (improved, no chunking) ---
+            webSpeak(text, onEnd) {
+                if (!('speechSynthesis' in window)) { if (onEnd) onEnd(); return; }
+                window.speechSynthesis.cancel();
+                const utterance = new SpeechSynthesisUtterance(text);
+                utterance.lang = 'vi-VN';
+                const isFemale = Store.reader.selectedVoice === 'female';
+                utterance.rate = isFemale ? 0.88 : 0.84;
+                utterance.pitch = isFemale ? 1.08 : 0.82;
+                // Pick best vi-VN voice available
+                const voices = window.speechSynthesis.getVoices();
+                const viVoices = voices.filter(v => v.lang.toLowerCase().startsWith('vi'));
+                if (viVoices.length > 0) {
+                    // Prefer Google / Neural voices
+                    const best = viVoices.find(v => v.name.toLowerCase().includes('google') || v.name.toLowerCase().includes('natural') || v.name.toLowerCase().includes('neural'))
+                                 || viVoices[0];
+                    utterance.voice = best;
+                }
+                utterance.onend = () => { if (onEnd) onEnd(); };
+                utterance.onerror = () => { if (onEnd) onEnd(); };
+                this.webUtterance = utterance;
                 window.speechSynthesis.speak(utterance);
             },
             
-            pause() {
-                this.isPlayingChunked = false;
-                if (Store.reader.speechSupported) {
-                    window.speechSynthesis.cancel();
-                }
-                if (this.ttsTimer) clearTimeout(this.ttsTimer);
-            },
-            
-            resume(text, onBoundary, onEnd) {
-                this.isPlayingChunked = true;
-                this.speakNextChunk();
-            },
-            
-            stop() {
-                this.isPlayingChunked = false;
-                if (Store.reader.speechSupported) {
-                    window.speechSynthesis.cancel();
-                }
-                if (this.ttsTimer) clearTimeout(this.ttsTimer);
-                this.chunks = [];
-                this.currentChunkIndex = 0;
-            },
-            
-            fallbackSpeak(text, onEnd) {
-                const words = text.split(' ');
-                let currentWordIndex = 0;
-                const msPerWord = 480; // Nhịp điệu chậm rãi giống Chú Mèo Đi Dép
-                
-                const tick = () => {
-                    if (!Store.reader.isPlaying) return;
-                    if (currentWordIndex >= words.length) {
-                        onEnd();
-                        return;
-                    }
-                    const charIndex = words.slice(0, currentWordIndex).join(' ').length + (currentWordIndex > 0 ? 1 : 0);
-                    Store.reader.highlightCharIndex = charIndex;
-                    updateReaderTextDisplay();
-                    
-                    currentWordIndex++;
-                    this.ttsTimer = setTimeout(tick, msPerWord);
-                };
-                
-                tick();
-            }
-        };
 
-        // Navigation
         function navigateTo(screen, params = {}) {
             // Stop active narration
             SpeechEngine.stop();
             Store.reader.isPlaying = false;
-            if (Store.reader.timer) clearInterval(Store.reader.timer);
             
             // Stop Bedtime synthesizers if leaving Bedtime mode
             if (Store.currentScreen === 'bedtime' && screen !== 'bedtime') {
@@ -694,17 +571,15 @@
             } else if (screen === 'reader') {
                 const story = Store.stories.find(s => s.id === params.storyId);
                 Store.reader.story = story;
-                
-                // Get saved reading progress
+                // Get saved reading progress (page-based → convert to slide)
                 let pageProgress = Store.readingProgress[story.id] || 0;
                 if (story.pages && (pageProgress >= story.pages.length || pageProgress < 0)) {
                     pageProgress = 0;
                 }
                 Store.reader.currentPage = pageProgress;
+                Store.reader.currentSlide = pageProgress * 2; // start on text slide
                 Store.reader.isPlaying = false;
-                Store.reader.audioProgress = 0;
-                Store.reader.audioTime = 0;
-                Store.reader.highlightCharIndex = -1;
+                Store.reader.isOverlayVisible = true;
             } else if (screen === 'bedtime') {
                 initBedtimePlaylist();
             }
@@ -748,22 +623,16 @@
 
         // ================= RENDERING TEMPLATES =================
 
-        // Header Component
         function renderHeader() {
             let backButton = '';
             let title = 'Bảo Bối';
-            let rightButton = `
-                <button onclick="navigateTo('admin')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all" title="Trang quản trị">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.39.43 1.007.094 1.45l-.526.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.894.149c-.424.07-.764.383-.929.78-.165.398-.143.854.107 1.204l.527.738c.32.43.28 1.027-.108 1.45l-.773.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.398.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527a1.125 1.125 0 0 1-1.448-.12l-.774-.772a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.272-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.108-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z" />
-                      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
-                    </svg>
-                </button>
-            `;
+            let rightButton = '';
+
+            const badgeCount = Store.unlockedBadges.length;
 
             if (Store.currentScreen === 'age-hub') {
                 backButton = `
-                    <button onclick="navigateTo('home')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all">
+                    <button onclick="navigateTo('home')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary hover:bg-textPrimary/10 active:scale-90 transition-all">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
                           <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
                         </svg>
@@ -771,18 +640,20 @@
                 `;
                 title = Store.selectedAgeGroup === '5-8' ? 'Cánh Cửa Cổ Tích' : 
                         Store.selectedAgeGroup === '9-12' ? 'Bản Đồ Phiêu Lưu' : 'Phòng Giải Mã';
+                rightButton = `<div class="w-9"></div>`;
             } else if (Store.currentScreen === 'detail') {
                 backButton = `
-                    <button onclick="navigateTo('${Store.selectedAgeGroup ? 'age-hub' : 'home'}', {ageGroup: '${Store.selectedAgeGroup}'})" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all">
+                    <button onclick="navigateTo('${Store.selectedAgeGroup ? 'age-hub' : 'home'}', {ageGroup: '${Store.selectedAgeGroup}'})" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary hover:bg-textPrimary/10 active:scale-90 transition-all">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
                           <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
                         </svg>
                     </button>
                 `;
                 title = 'Chi tiết truyện';
+                rightButton = `<div class="w-9"></div>`;
             } else if (Store.currentScreen === 'admin') {
                 backButton = `
-                    <button onclick="navigateTo('home')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all">
+                    <button onclick="navigateTo('home')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary hover:bg-textPrimary/10 active:scale-90 transition-all">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
                           <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 19.5L8.25 12l7.5-7.5" />
                         </svg>
@@ -793,27 +664,55 @@
             } else if (Store.currentScreen === 'bedtime') {
                 title = 'Bảo Bối Đêm';
                 backButton = '<div class="w-9"></div>';
+                rightButton = '<div class="w-9"></div>';
             } else if (Store.currentScreen === 'library') {
                 title = 'Tủ Sách Của Con';
                 backButton = '<div class="w-9"></div>';
+                rightButton = '<div class="w-9"></div>';
             } else {
-                // Home Screen
+                // Trang chủ - Thiết kế sang trọng tối giản của Apple
                 backButton = `
-                    <div class="flex items-center gap-1.5">
-                        <span class="text-2xl">🧸</span>
-                        <span class="font-extrabold text-[18px] text-textPrimary tracking-tight">baoboi.org</span>
+                    <div class="flex flex-col items-start">
+                        <div class="flex items-center gap-1">
+                            <span class="font-outfit font-extrabold text-[22px] text-textPrimary tracking-tight select-none">Bảo Bối<span class="text-honeyYellow font-black">.</span></span>
+                        </div>
+                        <span class="text-[9px] font-bold text-textSecondary uppercase tracking-wider select-none font-outfit opacity-80">Interactive Storybook</span>
                     </div>
                 `;
                 title = '';
+                
+                // Vòng tròn SVG động biểu thị số lượng huy hiệu đạt được
+                const totalPossibleBadges = 4;
+                const progressPercentage = Math.min(100, Math.max(0, (badgeCount / totalPossibleBadges) * 100));
+                const radius = 14;
+                const circumference = 2 * Math.PI * radius;
+                const strokeDashoffset = circumference - (progressPercentage / 100) * circumference;
+
                 rightButton = `
                     <div class="flex items-center gap-2">
-                        <button onclick="toggleSearch()" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-5 h-5">
+                        <button onclick="toggleSearch()" class="w-8.5 h-8.5 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary hover:bg-honeyYellow/20 hover:text-textPrimary active:scale-90 transition-all duration-300" title="Tìm kiếm">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4.5 h-4.5">
                               <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
                             </svg>
                         </button>
-                        <button onclick="navigateTo('admin')" class="w-9 h-9 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary active:scale-90 transition-all" title="Trang quản trị">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                        
+                        <!-- Avatar phong cách Apple hiển thị số lượng huy hiệu đạt được -->
+                        <button onclick="navigateTo('library')" class="relative w-9 h-9 flex items-center justify-center rounded-full active:scale-95 transition-transform" title="Tủ sách của bé">
+                            <svg class="absolute inset-0 w-full h-full -rotate-90">
+                                <circle cx="18" cy="18" r="${radius}" stroke="rgba(31, 36, 48, 0.06)" stroke-width="2" fill="transparent" />
+                                <circle cx="18" cy="18" r="${radius}" stroke="#F6C65B" stroke-width="2.5" fill="transparent"
+                                    stroke-dasharray="${circumference}" stroke-dashoffset="${strokeDashoffset}" stroke-linecap="round" style="transition: stroke-dashoffset 0.5s ease-in-out;" />
+                            </svg>
+                            <div class="w-7 h-7 rounded-full bg-honeyYellow/10 border border-honeyYellow/20 flex items-center justify-center text-xs font-bold text-textPrimary z-5">
+                                🦊
+                            </div>
+                            <span class="absolute -top-1 -right-1 bg-textPrimary text-white text-[7.5px] font-black w-3.5 h-3.5 rounded-full flex items-center justify-center shadow-sm border border-[#FFF4D8]">
+                                ${badgeCount}
+                            </span>
+                        </button>
+                        
+                        <button onclick="navigateTo('admin')" class="w-8.5 h-8.5 flex items-center justify-center rounded-full bg-textPrimary/5 text-textPrimary hover:bg-textPrimary/10 active:scale-90 transition-all duration-300" title="Trang quản trị">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-4.5 h-4.5">
                               <path stroke-linecap="round" stroke-linejoin="round" d="M10.343 3.94c.09-.542.56-.94 1.11-.94h1.093c.55 0 1.02.398 1.11.94l.149.894c.07.424.384.764.78.93.398.164.855.142 1.205-.108l.737-.527a1.125 1.125 0 0 1 1.45.12l.773.774c.39.39.43 1.007.094 1.45l-.526.737c-.25.35-.272.806-.107 1.204.165.397.505.71.93.78l.893.15c.543.09.94.559.94 1.109v1.094c0 .55-.397 1.02-.94 1.11l-.894.149c-.424.07-.764.383-.929.78-.165.398-.143.854.107 1.204l.527.738c.32.43.28 1.027-.108 1.45l-.773.773a1.125 1.125 0 0 1-1.449.12l-.738-.527c-.35-.25-.806-.272-1.203-.107-.398.165-.71.505-.781.929l-.149.894c-.09.542-.56.94-1.11.94h-1.094c-.55 0-1.019-.398-1.11-.94l-.148-.894c-.071-.424-.384-.764-.781-.93-.398-.164-.854-.142-1.204.108l-.738.527a1.125 1.125 0 0 1-1.448-.12l-.774-.772a1.125 1.125 0 0 1-.12-1.45l.527-.737c.25-.35.272-.806.108-1.204-.165-.397-.505-.71-.93-.78l-.894-.15c-.542-.09-.94-.56-.94-1.109v-1.094c0-.55.398-1.02.94-1.11l.894-.149c.424-.07.765-.383.93-.78.165-.398.143-.854-.108-1.204l-.527-.738a1.125 1.125 0 0 1 .12-1.45l.773-.773a1.125 1.125 0 0 1 1.45-.12l.737.527c.35.25.807.272 1.204.107.397-.165.71-.505.78-.929l.15-.894Z" />
                               <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
                             </svg>
@@ -822,24 +721,36 @@
                 `;
             }
 
-            const headerBg = Store.currentScreen === 'bedtime' ? 'bg-nightLibrary/80 border-b border-white/5 text-white' : 'bg-cardLight/80 border-b border-textSecondary/10 text-textPrimary';
+            const isHome = Store.currentScreen === 'home';
+            const isBedtime = Store.currentScreen === 'bedtime';
+            const headerBg = isBedtime ? 'bg-[#17213A]/90 border-b border-white/5 text-white' : 'bg-[#FFF4D8]/95 border-b border-textPrimary/5 text-textPrimary';
+            const heightClass = isHome ? 'h-16 min-h-16' : 'h-14 min-h-14';
 
             let headerHtml = `
-                <header class="w-full h-14 min-h-14 px-4 flex justify-between items-center z-10 sticky top-0 backdrop-blur-md ${headerBg}">
+                <header class="w-full ${heightClass} px-4 flex justify-between items-center z-10 sticky top-0 backdrop-blur-md ${headerBg} transition-all duration-300">
                     ${backButton}
-                    <div class="text-center">
-                        <h1 class="text-[15px] font-bold truncate max-w-[180px]">${title}</h1>
+                    ${title ? `
+                    <div class="text-center flex-1">
+                        <h1 class="text-[15px] font-outfit font-extrabold truncate max-w-[180px] tracking-tight">${title}</h1>
                     </div>
+                    ` : ''}
                     ${rightButton}
                 </header>
             `;
 
-            // Search Overlay Input
+            // Tái thiết kế thanh tìm kiếm
             if (Store.currentScreen === 'home' && Store.isSearchOpen) {
                 headerHtml += `
-                    <div class="w-full bg-[#FFF9EE] border-b border-textSecondary/10 px-4 py-2 z-10 flex gap-2 items-center">
-                        <input type="text" id="search-input" value="${Store.searchQuery}" oninput="handleSearch(this.value)" placeholder="Tìm kiếm truyện tranh..." class="flex-1 px-3 py-1.5 rounded-full border border-textSecondary/20 bg-white text-textPrimary text-sm focus:outline-none focus:border-honeyYellow">
-                        <button onclick="toggleSearch()" class="text-xs font-semibold text-textSecondary px-2 py-1">Đóng</button>
+                    <div class="w-full bg-[#FFF4D8] border-b border-textPrimary/5 px-4 py-2.5 z-10 flex gap-2.5 items-center transition-all duration-200">
+                        <div class="flex-1 relative flex items-center">
+                            <span class="absolute left-3.5 text-textSecondary/50">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2.5" stroke="currentColor" class="w-4 h-4">
+                                  <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                                </svg>
+                            </span>
+                            <input type="text" id="search-input" value="${Store.searchQuery}" oninput="handleSearch(this.value)" placeholder="Tìm kiếm truyện tranh..." class="w-full pl-9 pr-4 py-2 rounded-xl border border-textPrimary/5 bg-white text-textPrimary text-xs font-medium focus:outline-none focus:ring-1 focus:ring-honeyYellow focus:border-honeyYellow shadow-sm">
+                        </div>
+                        <button onclick="toggleSearch()" class="text-xs font-bold text-textPrimary bg-textPrimary/5 hover:bg-textPrimary/10 px-3 py-2 rounded-xl active:scale-95 transition-all">Huỷ</button>
                     </div>
                 `;
             }
